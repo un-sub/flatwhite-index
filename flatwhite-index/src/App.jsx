@@ -1,22 +1,5 @@
 import { useState, useEffect } from "react";
-
-const SUPABASE_URL = "https://fhcxythnjadmscqlpzgx.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_mHNJsNq7iXHD80PRCwsKmg_2v5i8-gq";
-
-const query = async (path, options = {}) => {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
-    headers: {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: options.prefer || "",
-    },
-    ...options,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const text = await res.text();
-  return text ? JSON.parse(text) : null;
-};
+import { query, formatPrice, CARD, VIBES, KNOWN_CAFES, haversine, formatDist } from "./utils";
 
 const SUBURBS = [
   "Abbotsford", "Albert Park", "Armadale", "Balwyn", "Brunswick",
@@ -24,8 +7,8 @@ const SUBURBS = [
   "Collingwood", "Cremorne", "Docklands", "Elwood", "Essendon",
   "Fitzroy", "Flemington", "Footscray", "Glen Iris", "Hawthorn",
   "Kensington", "Kew", "Malvern", "Middle Park", "Moonee Ponds",
-  "Newport", "Northcote", "Parkville", "Port Melbourne", "Prahran",
-  "Preston", "Richmond", "South Melbourne", "South Yarra", "St Kilda",
+  "Newport", "North Melbourne", "Northcote", "Parkville", "Pascoe Vale", "Port Melbourne", "Prahran",
+  "Preston", "Reservoir", "Richmond", "South Melbourne", "South Yarra", "St Kilda",
   "Surrey Hills", "Thornbury", "Toorak", "Williamstown", "Windsor", "Yarraville"
 ];
 
@@ -57,11 +40,14 @@ const SUBURB_LATLNG = {
   "Middle Park":     [-37.854, 144.959],
   "Moonee Ponds":    [-37.768, 144.927],
   "Newport":         [-37.843, 144.885],
+  "North Melbourne": [-37.801, 144.943],
   "Northcote":       [-37.772, 145.011],
   "Parkville":       [-37.789, 144.958],
+  "Pascoe Vale":     [-37.726, 144.950],
   "Port Melbourne":  [-37.836, 144.936],
   "Prahran":         [-37.850, 144.993],
   "Preston":         [-37.748, 145.009],
+  "Reservoir":       [-37.718, 145.002],
   "Richmond":        [-37.822, 145.000],
   "South Melbourne": [-37.834, 144.969],
   "South Yarra":     [-37.839, 144.994],
@@ -73,8 +59,6 @@ const SUBURB_LATLNG = {
   "Windsor":         [-37.857, 144.993],
   "Yarraville":      [-37.816, 144.882],
 };
-
-const formatPrice = (p) => `$${Number(p).toFixed(2)}`;
 
 const getSuburbAverages = (entries) => {
   const map = {};
@@ -100,6 +84,21 @@ const getSuburbCafes = (entries, suburb) => {
     avg: items.reduce((a, b) => a + b.price, 0) / items.length,
     count: items.length,
     items: items.sort((a, b) => new Date(b.date) - new Date(a.date))
+  })).sort((a, b) => a.avg - b.avg);
+};
+
+const getAllCafes = (entries) => {
+  const map = {};
+  entries.forEach(e => {
+    const key = `${e.cafe}||${e.suburb}`;
+    if (!map[key]) map[key] = { cafe: e.cafe, suburb: e.suburb, prices: [] };
+    map[key].prices.push(Number(e.price));
+  });
+  return Object.values(map).map(c => ({
+    cafe: c.cafe,
+    suburb: c.suburb,
+    avg: c.prices.reduce((a, b) => a + b, 0) / c.prices.length,
+    count: c.prices.length,
   })).sort((a, b) => a.avg - b.avg);
 };
 
@@ -156,35 +155,88 @@ const SUBURB_POSITIONS = {
   "Glen Iris":       [372, 322],
   "Kensington":      [176, 258],
   "Middle Park":     [194, 342],
+  "North Melbourne": [196, 228],
   "Parkville":       [208, 190],
+  "Pascoe Vale":     [200, 100],
   "Preston":         [308, 120],
+  "Reservoir":       [310, 92],
   "Surrey Hills":    [416, 274],
   "Toorak":          [320, 308],
 };
 
-const CARD = {
-  background: "#ffffff",
-  borderRadius: "20px",
-  border: "1.5px solid #ede5d8",
-  boxShadow: "0 2px 12px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04)",
-};
+
+
+function CafeCard({ cafe, suburb, price, vibes, onLog }) {
+  return (
+    <div style={{ ...CARD, padding: "18px 18px 14px" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "10px" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: "15px", fontWeight: "800", color: "#1e1a14", lineHeight: 1.2 }}>{cafe}</div>
+          <div style={{ fontSize: "12px", color: "#b0a090", fontWeight: "600", marginTop: "3px" }}>📍 {suburb}</div>
+        </div>
+        <div style={{
+          background: "#fff3e8", color: "#c8684a", fontWeight: "800", fontSize: "17px",
+          padding: "6px 14px", borderRadius: "999px", flexShrink: 0, border: "1.5px solid #f0d4c0"
+        }}>
+          ${Number(price).toFixed(2)}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "12px" }}>
+        {vibes.slice(0, 3).map(v => {
+          const vibe = VIBES.find(vb => vb.id === v);
+          if (!vibe) return null;
+          return (
+            <span key={v} style={{
+              fontSize: "11px", fontWeight: "700", padding: "4px 10px", borderRadius: "999px",
+              background: vibe.bg, color: vibe.color, border: `1.5px solid ${vibe.border}`
+            }}>
+              {vibe.emoji} {vibe.label}
+            </span>
+          );
+        })}
+      </div>
+      <button
+        onClick={onLog}
+        style={{
+          width: "100%", padding: "10px", borderRadius: "999px",
+          background: "transparent", border: "1.5px solid #ede5d8",
+          color: "#c8684a", fontSize: "13px", fontWeight: "700",
+          cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s",
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = "#fff3e8"; e.currentTarget.style.borderColor = "#f0d4c0"; }}
+        onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "#ede5d8"; }}
+      >
+        ☕ Log a coffee here
+      </button>
+    </div>
+  );
+}
 
 export default function App() {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [view, setView] = useState("leaderboard");
-  const [form, setForm] = useState({ suburb: "", cafe: "", price: "", address: "" });
+  const [view, setView] = useState(() => window.location.hash === "#map" ? "map" : "leaderboard");
+  const [form, setForm] = useState({ suburb: "", cafe: "", price: "", address: "", vibes: [] });
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [animIn, setAnimIn] = useState(true);
   const [selectedSuburb, setSelectedSuburb] = useState(null);
+  const [renderedView, setRenderedView] = useState(() => window.location.hash === "#map" ? "map" : "leaderboard");
   const [hoveredSuburb, setHoveredSuburb] = useState(null);
   const [suburbCafes, setSuburbCafes] = useState([]);
   const [suburbCafesLoading, setSuburbCafesLoading] = useState(false);
   const [cafeSearch, setCafeSearch] = useState("");
+  const [search, setSearch] = useState("");
+  const [nearMe, setNearMe] = useState("idle"); // idle | loading | done | error
+  const [nearMeResults, setNearMeResults] = useState([]);
+  // True when user arrived via the landing page "Show me my 3 closest" button
+  const [pendingNearMe, setPendingNearMe] = useState(
+    () => window.location.hash === "#near-me"
+  );
 
   const fetchEntries = async () => {
+    setLoading(true);
     try {
       const data = await query("/prices?select=*&order=created_at.desc");
       setEntries(data || []);
@@ -196,6 +248,48 @@ export default function App() {
   };
 
   useEffect(() => { fetchEntries(); }, []);
+
+  // Clear #map hash on mount so refresh doesn't re-apply the view
+  useEffect(() => {
+    if (window.location.hash === "#map") window.location.hash = "#app";
+  }, []);
+
+  // Auto-trigger near-me when arriving from the landing page CTA
+  useEffect(() => {
+    if (pendingNearMe && !loading) {
+      setPendingNearMe(false);
+      window.location.hash = "#app";
+      findNearMe();
+    }
+  }, [pendingNearMe, loading]);
+
+  const findNearMe = () => {
+    if (!navigator.geolocation) { setNearMe("error"); return; }
+    setNearMe("loading");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        // Build average price map from current entries
+        const priceMap = {};
+        entries.forEach(e => {
+          if (!priceMap[e.cafe]) priceMap[e.cafe] = [];
+          priceMap[e.cafe].push(Number(e.price));
+        });
+        const results = KNOWN_CAFES
+          .map(cafe => {
+            const dist = haversine(latitude, longitude, cafe.lat, cafe.lng);
+            const prices = priceMap[cafe.name] || [];
+            const avgPrice = prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : null;
+            return { ...cafe, dist, avgPrice };
+          })
+          .sort((a, b) => a.dist - b.dist)
+          .slice(0, 3);
+        setNearMeResults(results);
+        setNearMe("done");
+      },
+      () => setNearMe("error")
+    );
+  };
 
   // Fetch cafes from OpenStreetMap when suburb changes
   useEffect(() => {
@@ -219,11 +313,16 @@ export default function App() {
       .finally(() => setSuburbCafesLoading(false));
   }, [form.suburb]);
 
-  useEffect(() => {
+  // Fade out, run state update, fade back in
+  const animate = (fn) => {
     setAnimIn(false);
-    const t = setTimeout(() => setAnimIn(true), 50);
-    return () => clearTimeout(t);
-  }, [view]);
+    setTimeout(() => { fn(); setAnimIn(true); }, 180);
+  };
+
+  const changeView = (v) => {
+    setView(v); // highlight nav immediately
+    animate(() => { setRenderedView(v); setSelectedSuburb(null); setSearch(""); });
+  };
 
   const suburbAverages = getSuburbAverages(entries);
   const allPrices = suburbAverages.map(s => s.avg);
@@ -233,6 +332,14 @@ export default function App() {
   const cheapest = suburbAverages[0];
   const priciest = suburbAverages[suburbAverages.length - 1];
   const suburbAvgMap = Object.fromEntries(suburbAverages.map(s => [s.suburb, s]));
+  const allEntryPrices = entries.map(e => Number(e.price));
+  const minEntryPrice = allEntryPrices.length ? Math.min(...allEntryPrices) : 0;
+  const maxEntryPrice = allEntryPrices.length ? Math.max(...allEntryPrices) : 0;
+
+  const submitHint = !form.suburb ? "Pick a suburb to get started"
+    : !form.cafe ? "Choose a cafe above"
+    : !form.price ? "Enter the price above"
+    : null;
 
   const handleSubmit = async () => {
     if (!form.suburb || !form.cafe || !form.price) return;
@@ -251,11 +358,11 @@ export default function App() {
         })
       });
       setSubmitted(true);
-      setForm({ suburb: "", cafe: "", price: "", address: "" });
+      setForm({ suburb: "", cafe: "", price: "", address: "", vibes: [] });
       setSuburbCafes([]);
       setCafeSearch("");
       await fetchEntries();
-      setTimeout(() => { setSubmitted(false); setView("leaderboard"); }, 2000);
+      setTimeout(() => { setSubmitted(false); changeView("leaderboard"); }, 2000);
     } catch (e) {
       alert("Something went wrong submitting. Try again.");
     } finally {
@@ -273,14 +380,6 @@ export default function App() {
 
         {/* Header */}
         <div style={{ textAlign: "center", padding: "48px 0 32px" }}>
-          <div style={{
-            display: "inline-block", background: "#fff3e8", color: "#c8684a",
-            fontSize: "12px", fontWeight: "700", letterSpacing: "2px",
-            textTransform: "uppercase", padding: "6px 16px", borderRadius: "999px",
-            border: "1.5px solid #f0d4c0", marginBottom: "20px"
-          }}>
-            Melbourne · Est. 2026
-          </div>
           <h1 style={{
             fontSize: "clamp(42px, 10vw, 72px)", fontWeight: "800",
             lineHeight: 1.05, color: "#1e1a14", margin: "0 0 12px", letterSpacing: "-1.5px"
@@ -289,7 +388,131 @@ export default function App() {
             <span style={{ color: "#c8684a", fontStyle: "italic" }}>Spot</span>
           </h1>
           <p style={{ fontSize: "16px", color: "#a09080", fontWeight: "600" }}>
-            Find your spot.
+            Find your spot in Melbourne
+          </p>
+
+          {/* Hero CTA */}
+          <div style={{ marginTop: "28px" }}>
+            {nearMe !== "done" && (
+              <button
+                onClick={findNearMe}
+                disabled={nearMe === "loading"}
+                style={{
+                  padding: "18px 40px", borderRadius: "999px",
+                  background: nearMe === "loading" ? "#d4967a" : "#c8684a",
+                  border: "none", color: "#ffffff",
+                  fontSize: "18px", fontWeight: "800", letterSpacing: "0.2px",
+                  cursor: nearMe === "loading" ? "not-allowed" : "pointer",
+                  fontFamily: "inherit",
+                  boxShadow: "0 8px 28px rgba(200,104,74,0.45)",
+                  transition: "background 0.2s, box-shadow 0.2s, transform 0.1s",
+                  display: "inline-flex", alignItems: "center", gap: "10px",
+                }}
+                onMouseEnter={e => { if (nearMe !== "loading") { e.currentTarget.style.boxShadow = "0 10px 32px rgba(200,104,74,0.55)"; e.currentTarget.style.transform = "translateY(-1px)"; } }}
+                onMouseLeave={e => { e.currentTarget.style.boxShadow = "0 8px 28px rgba(200,104,74,0.45)"; e.currentTarget.style.transform = "translateY(0)"; }}
+              >
+                {nearMe === "loading" ? (
+                  <><span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⏳</span> Finding cafes...</>
+                ) : (
+                  <><span>📍</span> Find coffee near me</>
+                )}
+              </button>
+            )}
+            {nearMe === "error" && (
+              <p style={{ marginTop: "12px", fontSize: "13px", color: "#e05050", fontWeight: "600", margin: "12px 0 0" }}>
+                Couldn't get your location — check browser permissions and try again.
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Near Me Results */}
+        {nearMe === "done" && nearMeResults.length > 0 && (
+          <div style={{ marginBottom: "24px", animation: "fadeSlideIn 0.35s ease" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "14px", gap: "12px" }}>
+              <div>
+                <div style={{ fontSize: "20px", fontWeight: "800", color: "#1e1a14", lineHeight: 1.2 }}>Nearest to you</div>
+                <div style={{ fontSize: "13px", color: "#b0a090", fontWeight: "600", marginTop: "3px" }}>3 closest cafes in the index</div>
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+                <button
+                  onClick={findNearMe}
+                  style={{
+                    padding: "8px 16px", borderRadius: "999px",
+                    border: "1.5px solid #ede5d8", background: "#ffffff",
+                    color: "#a09080", fontSize: "12px", fontWeight: "700",
+                    cursor: "pointer", fontFamily: "inherit",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = "#c8684a"; e.currentTarget.style.color = "#c8684a"; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = "#ede5d8"; e.currentTarget.style.color = "#a09080"; }}
+                >↻ Refresh</button>
+                <button
+                  onClick={() => setNearMe("idle")}
+                  style={{
+                    padding: "8px 16px", borderRadius: "999px",
+                    border: "1.5px solid #ede5d8", background: "#ffffff",
+                    color: "#a09080", fontSize: "12px", fontWeight: "700",
+                    cursor: "pointer", fontFamily: "inherit",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = "#c8684a"; e.currentTarget.style.color = "#c8684a"; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = "#ede5d8"; e.currentTarget.style.color = "#a09080"; }}
+                >✕ Close</button>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {nearMeResults.map((cafe, i) => (
+                <div key={cafe.name} style={{ ...CARD, padding: "18px 18px 14px", position: "relative", overflow: "hidden", animation: `fadeSlideIn 0.3s ease ${i * 60}ms both` }}>
+                  {/* Rank badge */}
+                  <div style={{
+                    position: "absolute", top: "14px", left: "-2px",
+                    background: i === 0 ? "#c8684a" : "#e8ddd4",
+                    color: i === 0 ? "#ffffff" : "#a09080",
+                    fontSize: "11px", fontWeight: "800",
+                    padding: "4px 12px 4px 14px",
+                    borderRadius: "0 999px 999px 0",
+                    letterSpacing: "0.5px",
+                  }}>#{i + 1}</div>
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "10px", marginTop: "8px" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "15px", fontWeight: "800", color: "#1e1a14", lineHeight: 1.2 }}>{cafe.name}</div>
+                      <div style={{ fontSize: "12px", color: "#b0a090", fontWeight: "600", marginTop: "3px" }}>📍 {cafe.suburb}</div>
+                      <div style={{ fontSize: "12px", fontWeight: "700", color: "#c8684a", marginTop: "4px" }}>
+                        📏 {formatDist(cafe.dist)}
+                      </div>
+                    </div>
+                    {cafe.avgPrice !== null ? (
+                      <div style={{
+                        background: "#fff3e8", color: "#c8684a", fontWeight: "800", fontSize: "17px",
+                        padding: "6px 14px", borderRadius: "999px", flexShrink: 0, border: "1.5px solid #f0d4c0"
+                      }}>
+                        ${cafe.avgPrice.toFixed(2)}
+                      </div>
+                    ) : (
+                      <div style={{
+                        background: "#f4ede6", color: "#c8b8a8", fontWeight: "700", fontSize: "13px",
+                        padding: "6px 14px", borderRadius: "999px", flexShrink: 0, border: "1.5px solid #ede5d8"
+                      }}>
+                        No data
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Blurb */}
+        <div style={{
+          background: "#ffffff", borderRadius: "20px",
+          border: "1.5px solid #ede5d8", padding: "20px 24px",
+          marginBottom: "16px", textAlign: "left",
+        }}>
+          <p style={{ fontSize: "14px", lineHeight: "1.7", color: "#786450", fontWeight: "600", margin: 0 }}>
+            Flat whites are pushing <strong style={{ color: "#1e1a14" }}>$6</strong> and climbing.
+            Google's no help — it serves up the busy chains and tourist traps, not the hidden gems worth finding.{" "}
+            <strong style={{ color: "#1e1a14" }}>Coffee Spot</strong> is community-built: locals reporting real prices
+            at real cafes, so you always know where to get a great cup without the markup.
           </p>
         </div>
 
@@ -310,9 +533,9 @@ export default function App() {
         </div>
 
         {/* Nav */}
-        <div style={{ display: "flex", gap: "8px", marginBottom: "24px" }}>
-          {[["leaderboard", "📍 Suburbs"], ["map", "🗺 Map"], ["feed", "🕐 Recent"], ["submit", "＋ Add"]].map(([v, label]) => (
-            <button key={v} onClick={() => { setView(v); setSelectedSuburb(null); }} style={{
+        <div style={{ display: "flex", gap: "8px", marginBottom: "24px", alignItems: "center" }}>
+          {[["leaderboard", "☕ Cafes"], ["map", "🗺 Map"], ["feed", "🕐 Recent"], ["submit", "＋ Add"]].map(([v, label]) => (
+            <button key={v} onClick={() => changeView(v)} style={{
               flex: 1, padding: "12px 8px", borderRadius: "999px",
               border: view === v ? "2px solid #c8684a" : "2px solid #ede5d8",
               background: view === v ? "#c8684a" : "#ffffff",
@@ -322,19 +545,71 @@ export default function App() {
               boxShadow: view === v ? "0 4px 12px rgba(200,104,74,0.3)" : "none"
             }}>{label}</button>
           ))}
+          <button
+            onClick={fetchEntries}
+            title="Refresh"
+            style={{
+              width: "40px", height: "40px", borderRadius: "50%", flexShrink: 0,
+              border: "2px solid #ede5d8", background: "#ffffff",
+              color: "#a09080", fontSize: "16px", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              transition: "all 0.15s", fontFamily: "inherit",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = "#c8684a"; e.currentTarget.style.color = "#c8684a"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "#ede5d8"; e.currentTarget.style.color = "#a09080"; }}
+          >↻</button>
         </div>
 
+        {/* Search bar */}
+        {(renderedView === "leaderboard" || renderedView === "feed") && !selectedSuburb && (
+          <div style={{ position: "relative", marginBottom: "16px" }}>
+            <span style={{
+              position: "absolute", left: "16px", top: "50%", transform: "translateY(-50%)",
+              fontSize: "16px", pointerEvents: "none", opacity: 0.5,
+            }}>🔍</span>
+            <input
+              type="text"
+              placeholder="Search cafes or suburbs..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{
+                width: "100%", padding: "13px 16px 13px 42px",
+                borderRadius: "999px", border: "1.5px solid #ede5d8",
+                background: "#ffffff", color: "#1e1a14",
+                fontSize: "14px", fontFamily: "'Nunito', system-ui, sans-serif",
+                fontWeight: "600", boxSizing: "border-box",
+                outline: "none", transition: "border-color 0.15s, box-shadow 0.15s",
+                boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+              }}
+              onFocus={e => { e.target.style.borderColor = "#c8684a"; e.target.style.boxShadow = "0 0 0 3px rgba(200,104,74,0.12)"; }}
+              onBlur={e => { e.target.style.borderColor = "#ede5d8"; e.target.style.boxShadow = "0 1px 4px rgba(0,0,0,0.04)"; }}
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                style={{
+                  position: "absolute", right: "14px", top: "50%", transform: "translateY(-50%)",
+                  background: "#ede5d8", border: "none", borderRadius: "50%",
+                  width: "20px", height: "20px", cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: "11px", color: "#a09080", fontWeight: "800", fontFamily: "inherit",
+                }}
+              >✕</button>
+            )}
+          </div>
+        )}
+
         {/* Content */}
-        <div style={{ opacity: animIn ? 1 : 0, transform: animIn ? "translateY(0)" : "translateY(10px)", transition: "all 0.25s ease" }}>
+        <div style={{ opacity: animIn ? 1 : 0, transform: animIn ? "translateY(0)" : "translateY(8px)", transition: "opacity 0.18s ease, transform 0.22s ease" }}>
 
           {/* SUBURB DRILLDOWN */}
-          {view === "leaderboard" && selectedSuburb && (() => {
+          {renderedView === "leaderboard" && selectedSuburb && (() => {
             const cafes = getSuburbCafes(entries, selectedSuburb);
             const cafeMin = Math.min(...cafes.map(c => c.avg));
             const cafeMax = Math.max(...cafes.map(c => c.avg));
             return (
               <div>
-                <button onClick={() => { setSelectedSuburb(null); setAnimIn(false); setTimeout(() => setAnimIn(true), 50); }} style={{
+                <button onClick={() => animate(() => setSelectedSuburb(null))} style={{
                   display: "flex", alignItems: "center", gap: "6px",
                   background: "#fff", border: "1.5px solid #ede5d8", borderRadius: "999px",
                   color: "#a09080", fontSize: "13px", fontWeight: "700",
@@ -383,58 +658,50 @@ export default function App() {
             );
           })()}
 
-          {/* LEADERBOARD */}
-          {view === "leaderboard" && !selectedSuburb && (
-            <div>
-              {loading ? (
-                <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700", letterSpacing: "1px" }}>
-                  Brewing data...
-                </div>
-              ) : error ? (
-                <div style={{ textAlign: "center", padding: "60px 0", color: "#e05050", fontSize: "14px", fontWeight: "700" }}>{error}</div>
-              ) : suburbAverages.length === 0 ? (
-                <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700" }}>
-                  No prices yet — be the first to report one!
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {suburbAverages.map((s, i) => {
-                    const col = getPriceColor(s.avg, minAvg, maxAvg);
-                    const bg = getPriceBg(s.avg, minAvg, maxAvg);
-                    return (
-                      <div key={s.suburb} onClick={() => { setSelectedSuburb(s.suburb); setAnimIn(false); setTimeout(() => setAnimIn(true), 50); }}
-                        style={{ ...CARD, display: "flex", alignItems: "center", gap: "14px", padding: "14px 18px", cursor: "pointer", transition: "transform 0.12s, box-shadow 0.12s" }}
-                        onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px rgba(0,0,0,0.10)"; }}
-                        onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = CARD.boxShadow; }}>
-                        <div style={{
-                          width: "32px", height: "32px", borderRadius: "50%",
-                          background: i === 0 ? "rgba(58,170,106,0.12)" : i === suburbAverages.length - 1 ? "rgba(224,80,80,0.12)" : "#f4efe8",
-                          display: "flex", alignItems: "center", justifyContent: "center",
-                          fontSize: "12px", fontWeight: "800", color: i === 0 ? "#3aaa6a" : i === suburbAverages.length - 1 ? "#e05050" : "#c8b8a8",
-                          flexShrink: 0
-                        }}>{i + 1}</div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: "15px", fontWeight: "700", color: "#1e1a14" }}>{s.suburb}</div>
-                          <div style={{ fontSize: "12px", color: "#c8b8a8", fontWeight: "600", marginTop: "1px" }}>{s.count} report{s.count !== 1 ? "s" : ""}</div>
-                        </div>
-                        <div style={{ background: bg, color: col, fontWeight: "800", fontSize: "16px", padding: "6px 14px", borderRadius: "999px" }}>
-                          {formatPrice(s.avg)}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              {!loading && !error && (
-                <div style={{ textAlign: "center", marginTop: "20px", fontSize: "12px", color: "#d4c4b4", fontWeight: "700" }}>
-                  {entries.length} price{entries.length !== 1 ? "s" : ""} across {suburbAverages.length} suburb{suburbAverages.length !== 1 ? "s" : ""}
-                </div>
-              )}
-            </div>
-          )}
+          {/* CAFE LIST */}
+          {renderedView === "leaderboard" && !selectedSuburb && (() => {
+            if (loading) return (
+              <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700" }}>Brewing data...</div>
+            );
+            if (error) return (
+              <div style={{ textAlign: "center", padding: "60px 0", color: "#e05050", fontSize: "14px", fontWeight: "700" }}>{error}</div>
+            );
+            const allCafes = getAllCafes(entries);
+            const q = search.toLowerCase();
+            const filtered = allCafes.filter(c =>
+              c.cafe.toLowerCase().includes(q) || c.suburb.toLowerCase().includes(q)
+            );
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                {filtered.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700" }}>
+                    {search ? `No cafes match "${search}"` : "No prices yet — be the first to report one!"}
+                  </div>
+                ) : filtered.map(c => (
+                  <CafeCard
+                    key={`${c.cafe}||${c.suburb}`}
+                    cafe={c.cafe}
+                    suburb={c.suburb}
+                    price={c.avg}
+                    vibes={[]}
+                    onLog={() => {
+                      setForm({ suburb: c.suburb, cafe: c.cafe, price: "", address: "", vibes: [] });
+                      setCafeSearch("");
+                      changeView("submit");
+                    }}
+                  />
+                ))}
+                {filtered.length > 0 && (
+                  <div style={{ textAlign: "center", marginTop: "8px", fontSize: "12px", color: "#d4c4b4", fontWeight: "700" }}>
+                    {search ? `${filtered.length} result${filtered.length !== 1 ? "s" : ""}` : `${allCafes.length} cafes across ${[...new Set(allCafes.map(c => c.suburb))].length} suburbs`}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* MAP */}
-          {view === "map" && (
+          {renderedView === "map" && (
             <div style={{ ...CARD, padding: "20px" }}>
               {loading ? (
                 <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700" }}>Brewing data...</div>
@@ -453,10 +720,8 @@ export default function App() {
                           style={{ cursor: data ? "pointer" : "default" }}
                           onClick={() => {
                             if (!data) return;
-                            setSelectedSuburb(suburb);
-                            setView("leaderboard");
-                            setAnimIn(false);
-                            setTimeout(() => setAnimIn(true), 50);
+                            changeView("leaderboard");
+                            setTimeout(() => setSelectedSuburb(suburb), 180);
                           }}
                           onMouseEnter={() => setHoveredSuburb(suburb)}
                           onMouseLeave={() => setHoveredSuburb(null)}>
@@ -511,8 +776,12 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <div style={{ textAlign: "center", marginTop: "10px", fontSize: "11px", color: "#d4c4b4", fontWeight: "600" }}>
-                    Tap a suburb to see its cafes
+                  <div style={{
+                    textAlign: "center", marginTop: "12px", padding: "10px 16px",
+                    background: "#fff3e8", borderRadius: "12px",
+                    fontSize: "12px", color: "#c8684a", fontWeight: "700",
+                  }}>
+                    👆 Tap a coloured dot to explore that suburb's cafes
                   </div>
                 </>
               )}
@@ -520,34 +789,49 @@ export default function App() {
           )}
 
           {/* FEED */}
-          {view === "feed" && (
+          {renderedView === "feed" && (
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               {loading ? (
                 <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700" }}>Brewing data...</div>
               ) : entries.length === 0 ? (
                 <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700" }}>No prices yet — be the first!</div>
-              ) : entries.map((e) => (
-                <div key={e.id} style={{ ...CARD, padding: "14px 18px", display: "flex", alignItems: "center", gap: "14px" }}>
-                  <div style={{
-                    width: "44px", height: "44px", borderRadius: "14px",
-                    background: "#fff3e8", border: "1.5px solid #f0d4c0",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: "22px", flexShrink: 0
-                  }}>☕</div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: "14px", fontWeight: "700", color: "#1e1a14", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.cafe}</div>
-                    <div style={{ fontSize: "12px", color: "#b0a090", fontWeight: "600", marginTop: "2px" }}>{e.suburb} · {e.date}</div>
+              ) : (() => {
+                const q = search.toLowerCase();
+                const filtered = entries.filter(e =>
+                  e.cafe.toLowerCase().includes(q) || e.suburb.toLowerCase().includes(q)
+                );
+                if (filtered.length === 0) return (
+                  <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700" }}>
+                    No results for "{search}"
                   </div>
-                  <div style={{ background: "#fff3e8", color: "#c8684a", fontWeight: "800", fontSize: "16px", padding: "6px 14px", borderRadius: "999px", flexShrink: 0 }}>
-                    {formatPrice(e.price)}
+                );
+                return filtered.map((e) => {
+                const col = getPriceColor(Number(e.price), minEntryPrice, maxEntryPrice);
+                const bg  = getPriceBg(Number(e.price), minEntryPrice, maxEntryPrice);
+                return (
+                  <div key={e.id} style={{ ...CARD, padding: "14px 18px", display: "flex", alignItems: "center", gap: "14px" }}>
+                    <div style={{
+                      width: "44px", height: "44px", borderRadius: "14px",
+                      background: "#fff3e8", border: "1.5px solid #f0d4c0",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: "22px", flexShrink: 0
+                    }}>☕</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "14px", fontWeight: "700", color: "#1e1a14", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.cafe}</div>
+                      <div style={{ fontSize: "12px", color: "#b0a090", fontWeight: "600", marginTop: "2px" }}>{e.suburb} · {e.date}</div>
+                    </div>
+                    <div style={{ background: bg, color: col, fontWeight: "800", fontSize: "16px", padding: "6px 14px", borderRadius: "999px", flexShrink: 0 }}>
+                      {formatPrice(e.price)}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              });
+              })()}
             </div>
           )}
 
           {/* SUBMIT */}
-          {view === "submit" && (
+          {renderedView === "submit" && (
             <div style={{ ...CARD, padding: "28px 24px" }}>
               {submitted ? (
                 <div style={{ textAlign: "center", padding: "40px 0" }}>
@@ -564,8 +848,8 @@ export default function App() {
                   {/* Step 1: Suburb */}
                   <div style={{ marginBottom: "18px" }}>
                     <div style={{ fontSize: "12px", fontWeight: "700", letterSpacing: "1px", color: "#b0a090", textTransform: "uppercase", marginBottom: "8px" }}>Suburb</div>
-                    <select value={form.suburb} onChange={e => {
-                      setForm({ suburb: e.target.value, cafe: "", price: form.price, address: "" });
+                    <select className="cs-input" value={form.suburb} onChange={e => {
+                      setForm({ suburb: e.target.value, cafe: "", price: form.price, address: "", vibes: [] });
                       setCafeSearch("");
                     }} style={inputStyle}>
                       <option value="">Select suburb...</option>
@@ -598,6 +882,7 @@ export default function App() {
                       ) : (
                         <div style={{ ...CARD, padding: "10px" }}>
                           <input
+                            className="cs-input"
                             placeholder={`Search cafes in ${form.suburb}...`}
                             value={cafeSearch}
                             onChange={e => setCafeSearch(e.target.value)}
@@ -641,8 +926,60 @@ export default function App() {
                   {form.cafe && (
                     <div style={{ marginBottom: "18px" }}>
                       <div style={{ fontSize: "12px", fontWeight: "700", letterSpacing: "1px", color: "#b0a090", textTransform: "uppercase", marginBottom: "8px" }}>Price ($)</div>
-                      <input type="number" placeholder="4.00" step="0.10" min="0.50" max="20"
-                        value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} style={inputStyle} />
+                      <div style={{ display: "flex", gap: "6px", marginBottom: "10px", flexWrap: "wrap" }}>
+                        {["4.00", "4.50", "5.00", "5.50", "6.00", "6.50"].map(p => (
+                          <button key={p} onClick={() => setForm({ ...form, price: p })} style={{
+                            padding: "7px 13px", borderRadius: "999px",
+                            border: form.price === p ? "2px solid #c8684a" : "2px solid #ede5d8",
+                            background: form.price === p ? "#c8684a" : "#ffffff",
+                            color: form.price === p ? "#ffffff" : "#a09080",
+                            fontSize: "13px", fontWeight: "700", cursor: "pointer",
+                            fontFamily: "inherit", transition: "all 0.12s",
+                          }}>
+                            ${p}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        className="cs-input"
+                        type="number" placeholder="or type a price..." step="0.10" min="0.50" max="20"
+                        inputMode="decimal"
+                        value={form.price} onChange={e => setForm({ ...form, price: e.target.value })}
+                        style={inputStyle}
+                      />
+                    </div>
+                  )}
+
+                  {/* Step 4: Vibes */}
+                  {form.cafe && form.price && (
+                    <div style={{ marginBottom: "18px" }}>
+                      <div style={{ fontSize: "12px", fontWeight: "700", letterSpacing: "1px", color: "#b0a090", textTransform: "uppercase", marginBottom: "8px" }}>
+                        Vibe <span style={{ color: "#d4c4b4", fontWeight: "600", textTransform: "none", letterSpacing: 0 }}>— optional</span>
+                      </div>
+                      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                        {VIBES.map(v => {
+                          const active = form.vibes.includes(v.id);
+                          return (
+                            <button
+                              key={v.id}
+                              onClick={() => setForm(f => ({
+                                ...f,
+                                vibes: active ? f.vibes.filter(x => x !== v.id) : [...f.vibes, v.id]
+                              }))}
+                              style={{
+                                padding: "7px 12px", borderRadius: "999px", cursor: "pointer",
+                                fontFamily: "inherit", fontSize: "12px", fontWeight: "700",
+                                border: `1.5px solid ${active ? v.border : "#ede5d8"}`,
+                                background: active ? v.bg : "#ffffff",
+                                color: active ? v.color : "#a09080",
+                                transition: "all 0.12s",
+                              }}
+                            >
+                              {v.emoji} {v.label}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
 
@@ -658,8 +995,8 @@ export default function App() {
                   }}>
                     {submitting ? "Submitting..." : "Submit Price"}
                   </button>
-                  <div style={{ textAlign: "center", marginTop: "14px", fontSize: "12px", color: "#d4c4b4", fontWeight: "600" }}>
-                    No account needed. Just the vibe.
+                  <div style={{ textAlign: "center", marginTop: "12px", fontSize: "12px", fontWeight: "600", color: submitHint ? "#c8684a" : "#d4c4b4", minHeight: "18px" }}>
+                    {submitHint ?? "No account needed. Just the vibe."}
                   </div>
                 </>
               )}
@@ -675,7 +1012,7 @@ const inputStyle = {
   width: "100%", padding: "12px 16px", borderRadius: "14px",
   background: "#faf6f0", border: "1.5px solid #ede5d8",
   color: "#1e1a14", fontSize: "14px", fontFamily: "'Nunito', system-ui, sans-serif",
-  fontWeight: "600", boxSizing: "border-box", outline: "none",
+  fontWeight: "600", boxSizing: "border-box",
   appearance: "none", WebkitAppearance: "none",
-  transition: "border-color 0.15s"
+  transition: "border-color 0.15s, box-shadow 0.15s"
 };
