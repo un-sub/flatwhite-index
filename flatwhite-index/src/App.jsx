@@ -1,6 +1,18 @@
 import { useState, useEffect } from "react";
 import { query, formatPrice, CARD, VIBES, KNOWN_CAFES, haversine, formatDist } from "./utils";
 
+const timeAgo = (ts) => {
+  const diff = Date.now() - new Date(ts).getTime();
+  const mins  = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days  = Math.floor(diff / 86400000);
+  if (mins  < 1)  return "just now";
+  if (mins  < 60) return `${mins} min${mins  !== 1 ? "s" : ""} ago`;
+  if (hours < 24) return `${hours} hour${hours !== 1 ? "s" : ""} ago`;
+  if (days  < 7)  return `${days} day${days  !== 1 ? "s" : ""} ago`;
+  return new Date(ts).toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+};
+
 const SUBURBS = [
   "Abbotsford", "Albert Park", "Armadale", "Balwyn", "Brunswick",
   "Camberwell", "Carlton", "CBD", "Clifton Hill", "Coburg",
@@ -77,7 +89,7 @@ const getSuburbCafes = (entries, suburb) => {
   const map = {};
   entries.filter(e => e.suburb === suburb).forEach(e => {
     if (!map[e.cafe]) map[e.cafe] = [];
-    map[e.cafe].push({ price: Number(e.price), type: e.type, date: e.date, address: e.address });
+    map[e.cafe].push({ price: Number(e.price), type: e.type, date: e.date, address: e.address, name: e.name || "Anonymous" });
   });
   return Object.entries(map).map(([cafe, items]) => ({
     cafe,
@@ -89,16 +101,22 @@ const getSuburbCafes = (entries, suburb) => {
 
 const getAllCafes = (entries) => {
   const map = {};
+  // entries are ordered created_at.desc, so first encounter = latest entry
   entries.forEach(e => {
     const key = `${e.cafe}||${e.suburb}`;
-    if (!map[key]) map[key] = { cafe: e.cafe, suburb: e.suburb, prices: [] };
+    if (!map[key]) map[key] = { cafe: e.cafe, suburb: e.suburb, prices: [], latestEntryId: e.id, lastConfirmed: null };
     map[key].prices.push(Number(e.price));
+    if (e.last_confirmed && (!map[key].lastConfirmed || e.last_confirmed > map[key].lastConfirmed)) {
+      map[key].lastConfirmed = e.last_confirmed;
+    }
   });
   return Object.values(map).map(c => ({
     cafe: c.cafe,
     suburb: c.suburb,
     avg: c.prices.reduce((a, b) => a + b, 0) / c.prices.length,
     count: c.prices.length,
+    latestEntryId: c.latestEntryId,
+    lastConfirmed: c.lastConfirmed,
   })).sort((a, b) => a.avg - b.avg);
 };
 
@@ -166,48 +184,186 @@ const SUBURB_POSITIONS = {
 
 
 
-function CafeCard({ cafe, suburb, price, vibes, onLog }) {
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+function CafeCard({ cafe, suburb, price, vibes, onLog, latestEntryId, lastConfirmed, onConfirm, saved, onToggleSave }) {
+  const [confirmState, setConfirmState] = useState("idle"); // idle | asking | done | error
+  const [confirmError, setConfirmError] = useState(null);
+  const [heartAnim, setHeartAnim] = useState(false);
+
+  const isRecentlyConfirmed = lastConfirmed &&
+    (Date.now() - new Date(lastConfirmed).getTime()) < THIRTY_DAYS_MS;
+  const showBadge = isRecentlyConfirmed || confirmState === "done";
+
+  const handleConfirm = async () => {
+    setConfirmError(null);
+    setConfirmState("done"); // optimistic — show Thank you! immediately
+    try {
+      await onConfirm(latestEntryId);
+    } catch (e) {
+      setConfirmState("idle"); // revert if save failed
+      setConfirmError(e.message || "Couldn't save — check Supabase column/permissions.");
+    }
+  };
+
   return (
-    <div style={{ ...CARD, padding: "18px 18px 14px" }}>
+    <div style={{ ...CARD, padding: "18px 18px 14px", overflow: "visible" }}>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "10px" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: "15px", fontWeight: "800", color: "#1e1a14", lineHeight: 1.2 }}>{cafe}</div>
           <div style={{ fontSize: "12px", color: "#b0a090", fontWeight: "600", marginTop: "3px" }}>📍 {suburb}</div>
         </div>
-        <div style={{
-          background: "#fff3e8", color: "#c8684a", fontWeight: "800", fontSize: "17px",
-          padding: "6px 14px", borderRadius: "999px", flexShrink: 0, border: "1.5px solid #f0d4c0"
-        }}>
-          ${Number(price).toFixed(2)}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+          {onToggleSave && (
+            <div style={{ position: "relative", flexShrink: 0 }}>
+              <button
+                onClick={() => {
+                  if (!saved) {
+                    setHeartAnim(true);
+                    setTimeout(() => setHeartAnim(false), 750);
+                  }
+                  onToggleSave(cafe, suburb);
+                }}
+                title={saved ? "Remove from saved" : "Save this cafe"}
+                style={{
+                  background: saved ? "#fff0eb" : "transparent",
+                  border: `1.5px solid ${saved ? "#f0d4c0" : "#ede5d8"}`,
+                  borderRadius: "50%", width: "34px", height: "34px",
+                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: "16px", color: saved ? "#c8684a" : "#c8b8a8",
+                  transition: "background 0.15s, border-color 0.15s, color 0.15s",
+                  animation: heartAnim ? "heartPop 0.45s ease" : "none",
+                }}
+                onMouseEnter={e => {
+                  if (!heartAnim) e.currentTarget.style.transform = "scale(1.1)";
+                  e.currentTarget.style.background = "#fff0eb";
+                  e.currentTarget.style.borderColor = "#f0d4c0";
+                  e.currentTarget.style.color = "#c8684a";
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.transform = "scale(1)";
+                  e.currentTarget.style.background = saved ? "#fff0eb" : "transparent";
+                  e.currentTarget.style.borderColor = saved ? "#f0d4c0" : "#ede5d8";
+                  e.currentTarget.style.color = saved ? "#c8684a" : "#c8b8a8";
+                }}
+              >
+                {saved ? "♥" : "♡"}
+              </button>
+              {/* Floating hearts burst */}
+              {heartAnim && [
+                { hx: "-10px", delay: "0ms",   size: "13px" },
+                { hx:   "0px", delay: "60ms",  size: "16px" },
+                { hx:  "10px", delay: "30ms",  size: "11px" },
+                { hx:  "-5px", delay: "110ms", size: "10px" },
+                { hx:  "14px", delay: "80ms",  size: "9px"  },
+              ].map((h, i) => (
+                <div
+                  key={i}
+                  style={{
+                    position: "absolute",
+                    bottom: "50%",
+                    left: "50%",
+                    marginLeft: "-8px",
+                    fontSize: h.size,
+                    color: "#c8684a",
+                    pointerEvents: "none",
+                    "--hx": h.hx,
+                    animation: `heartFloat 0.65s ease ${h.delay} forwards`,
+                    zIndex: 20,
+                    userSelect: "none",
+                  }}
+                >♥</div>
+              ))}
+            </div>
+          )}
+          <div style={{
+            background: "#fff3e8", color: "#c8684a", fontWeight: "800", fontSize: "17px",
+            padding: "6px 14px", borderRadius: "999px", border: "1.5px solid #f0d4c0"
+          }}>
+            ${Number(price).toFixed(2)}
+          </div>
         </div>
       </div>
-      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "12px" }}>
-        {vibes.slice(0, 3).map(v => {
-          const vibe = VIBES.find(vb => vb.id === v);
-          if (!vibe) return null;
-          return (
-            <span key={v} style={{
-              fontSize: "11px", fontWeight: "700", padding: "4px 10px", borderRadius: "999px",
-              background: vibe.bg, color: vibe.color, border: `1.5px solid ${vibe.border}`
-            }}>
-              {vibe.emoji} {vibe.label}
-            </span>
-          );
-        })}
+
+      {/* Confirmed badge */}
+      {showBadge && (
+        <div style={{ marginBottom: "10px" }}>
+          <span style={{
+            fontSize: "11px", fontWeight: "700", padding: "4px 10px", borderRadius: "999px",
+            background: "#edfaf3", color: "#3a7a5a", border: "1.5px solid #b8e8cc",
+            display: "inline-flex", alignItems: "center", gap: "4px",
+          }}>✓ Confirmed recently</span>
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+        {/* Confirmation UI */}
+        {confirmState === "asking" ? (
+          <div style={{
+            padding: "12px 14px", borderRadius: "14px",
+            background: "#f6fbf8", border: "1.5px solid #b8e8cc",
+            animation: "fadeIn 0.15s ease",
+          }}>
+            <div style={{ fontSize: "13px", fontWeight: "700", color: "#3a7a5a", marginBottom: "10px" }}>
+              Still ${Number(price).toFixed(2)}?
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button
+                onClick={handleConfirm}
+                style={{
+                  flex: 1, padding: "9px", borderRadius: "999px",
+                  background: "#3a7a5a", border: "none", color: "#fff",
+                  fontSize: "12px", fontWeight: "800", cursor: "pointer", fontFamily: "inherit",
+                  boxShadow: "0 2px 8px rgba(58,122,90,0.25)",
+                }}
+              >✓ Yes, still right</button>
+              <button
+                onClick={() => setConfirmState("idle")}
+                style={{
+                  flex: 1, padding: "9px", borderRadius: "999px",
+                  background: "transparent", border: "1.5px solid #ede5d8",
+                  color: "#a09080", fontSize: "12px", fontWeight: "700",
+                  cursor: "pointer", fontFamily: "inherit",
+                }}
+              >Cancel</button>
+            </div>
+          </div>
+        ) : confirmState === "done" ? (
+          <div style={{ textAlign: "center", fontSize: "13px", color: "#3a7a5a", fontWeight: "800", padding: "6px 0", animation: "fadeIn 0.2s ease" }}>
+            Thank you! 🙌
+          </div>
+        ) : !showBadge && (
+          <button
+            onClick={() => setConfirmState("asking")}
+            style={{
+              width: "100%", padding: "10px", borderRadius: "999px",
+              background: "transparent", border: "1.5px solid #ede5d8",
+              color: "#a09080", fontSize: "13px", fontWeight: "700",
+              cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = "#b8e8cc"; e.currentTarget.style.color = "#3a7a5a"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "#ede5d8"; e.currentTarget.style.color = "#a09080"; }}
+          >Is this still right?</button>
+        )}
+
+        <button
+          onClick={onLog}
+          style={{
+            width: "100%", padding: "10px", borderRadius: "999px",
+            background: "transparent", border: "1.5px solid #ede5d8",
+            color: "#c8684a", fontSize: "13px", fontWeight: "700",
+            cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s",
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = "#fff3e8"; e.currentTarget.style.borderColor = "#f0d4c0"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "#ede5d8"; }}
+        >☕ Log a coffee here</button>
+
+        {confirmError && (
+          <div style={{ fontSize: "11px", color: "#e05050", fontWeight: "600", padding: "4px 4px 0", lineHeight: 1.4 }}>
+            ⚠ {confirmError}
+          </div>
+        )}
       </div>
-      <button
-        onClick={onLog}
-        style={{
-          width: "100%", padding: "10px", borderRadius: "999px",
-          background: "transparent", border: "1.5px solid #ede5d8",
-          color: "#c8684a", fontSize: "13px", fontWeight: "700",
-          cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s",
-        }}
-        onMouseEnter={e => { e.currentTarget.style.background = "#fff3e8"; e.currentTarget.style.borderColor = "#f0d4c0"; }}
-        onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "#ede5d8"; }}
-      >
-        ☕ Log a coffee here
-      </button>
     </div>
   );
 }
@@ -217,7 +373,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [view, setView] = useState(() => window.location.hash === "#map" ? "map" : "leaderboard");
-  const [form, setForm] = useState({ suburb: "", cafe: "", price: "", address: "", vibes: [] });
+  const [form, setForm] = useState({ suburb: "", cafe: "", price: "", address: "", vibes: [], name: "", email: "" });
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [animIn, setAnimIn] = useState(true);
@@ -229,11 +385,38 @@ export default function App() {
   const [cafeSearch, setCafeSearch] = useState("");
   const [search, setSearch] = useState("");
   const [nearMe, setNearMe] = useState("idle"); // idle | loading | done | error
+  const [showPriceWarning, setShowPriceWarning] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
   const [nearMeResults, setNearMeResults] = useState([]);
   // True when user arrived via the landing page "Show me my 3 closest" button
   const [pendingNearMe, setPendingNearMe] = useState(
     () => window.location.hash === "#near-me"
   );
+  const [savedCafes, setSavedCafes] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("cs_saved_cafes") || "[]")); }
+    catch { return new Set(); }
+  });
+
+  const toggleSave = (cafe, suburb) => {
+    const key = `${cafe}||${suburb}`;
+    setSavedCafes(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      localStorage.setItem("cs_saved_cafes", JSON.stringify([...next]));
+      return next;
+    });
+  };
+
+  const confirmPrice = async (entryId) => {
+    const now = new Date().toISOString();
+    await query(`/prices?id=eq.${entryId}`, {
+      method: "PATCH",
+      prefer: "return=minimal",
+      body: JSON.stringify({ last_confirmed: now })
+    });
+    // Optimistic update — avoids refetching which unmounts cards and wipes local confirmState
+    setEntries(prev => prev.map(e => e.id === entryId ? { ...e, last_confirmed: now } : e));
+  };
 
   const fetchEntries = async () => {
     setLoading(true);
@@ -341,8 +524,9 @@ export default function App() {
     : !form.price ? "Enter the price above"
     : null;
 
-  const handleSubmit = async () => {
-    if (!form.suburb || !form.cafe || !form.price) return;
+  const doSubmit = async () => {
+    setShowPriceWarning(false);
+    setSubmitError(null);
     setSubmitting(true);
     try {
       await query("/prices", {
@@ -354,23 +538,82 @@ export default function App() {
           address: form.address || null,
           type: "Flat White",
           price: parseFloat(form.price),
-          date: new Date().toISOString().split("T")[0]
+          date: new Date().toISOString().split("T")[0],
+          name: form.name.trim() || "Anonymous"
         })
       });
+      if (form.email.trim()) {
+        try {
+          await query("/subscribers", {
+            method: "POST",
+            prefer: "return=minimal",
+            body: JSON.stringify({
+              email: form.email.trim(),
+              name: form.name.trim() || null,
+            })
+          });
+        } catch (_) { /* silently ignore — don't block submission */ }
+      }
       setSubmitted(true);
-      setForm({ suburb: "", cafe: "", price: "", address: "", vibes: [] });
+      setForm({ suburb: "", cafe: "", price: "", address: "", vibes: [], name: "", email: "" });
       setSuburbCafes([]);
       setCafeSearch("");
       await fetchEntries();
       setTimeout(() => { setSubmitted(false); changeView("leaderboard"); }, 2000);
     } catch (e) {
-      alert("Something went wrong submitting. Try again.");
+      setSubmitError(e.message || "Something went wrong. Try again.");
     } finally {
       setSubmitting(false);
     }
   };
 
-  const filteredCafes = suburbCafes.filter(c =>
+  const handleSubmit = () => {
+    if (!form.suburb || !form.cafe || !form.price) return;
+    const newPrice = parseFloat(form.price);
+    const existing = entries.filter(e => e.cafe === form.cafe).map(e => Number(e.price));
+    if (existing.length > 0) {
+      const avg = existing.reduce((a, b) => a + b, 0) / existing.length;
+      if (Math.abs(newPrice - avg) / avg > 0.30) {
+        setShowPriceWarning(true);
+        return;
+      }
+    }
+    doSubmit();
+  };
+
+  // Dismiss price warning and clear errors if the user changes the cafe or price
+  useEffect(() => { setShowPriceWarning(false); setSubmitError(null); }, [form.cafe, form.price]);
+
+  // Refresh data every 30 s while the changelog tab is open
+  useEffect(() => {
+    if (renderedView !== "changelog") return;
+    fetchEntries();
+    const id = setInterval(fetchEntries, 30000);
+    return () => clearInterval(id);
+  }, [renderedView]);
+
+  // Cafes already in the index for this suburb, shown first in the picker
+  const indexCafesForSuburb = form.suburb
+    ? [...new Map(
+        entries
+          .filter(e => e.suburb === form.suburb)
+          .map(e => [e.cafe, {
+            name: e.cafe,
+            address: entries.find(en => en.cafe === e.cafe && en.suburb === form.suburb && en.address)?.address || "",
+            inIndex: true,
+          }])
+      ).values()].sort((a, b) => a.name.localeCompare(b.name))
+    : [];
+
+  // Merge: index cafes first, then OSM cafes not already covered
+  const mergedCafes = [...indexCafesForSuburb];
+  suburbCafes.forEach(c => {
+    if (!mergedCafes.find(a => a.name.toLowerCase() === c.name.toLowerCase())) {
+      mergedCafes.push({ ...c, inIndex: false });
+    }
+  });
+
+  const filteredCafes = mergedCafes.filter(c =>
     c.name.toLowerCase().includes(cafeSearch.toLowerCase())
   );
 
@@ -533,16 +776,17 @@ export default function App() {
         </div>
 
         {/* Nav */}
-        <div style={{ display: "flex", gap: "8px", marginBottom: "24px", alignItems: "center" }}>
-          {[["leaderboard", "☕ Cafes"], ["map", "🗺 Map"], ["feed", "🕐 Recent"], ["submit", "＋ Add"]].map(([v, label]) => (
+        <div style={{ display: "flex", gap: "5px", marginBottom: "24px", alignItems: "center" }}>
+          {[["leaderboard", "☕ Cafes"], ["map", "🗺 Map"], ["feed", "🕐 Recent"], ["changelog", "📋 Log"], ["saved", `♥ Saved${savedCafes.size > 0 ? ` (${savedCafes.size})` : ""}`], ["submit", "＋ Add"]].map(([v, label]) => (
             <button key={v} onClick={() => changeView(v)} style={{
-              flex: 1, padding: "12px 8px", borderRadius: "999px",
+              flex: 1, padding: "10px 4px", borderRadius: "999px",
               border: view === v ? "2px solid #c8684a" : "2px solid #ede5d8",
               background: view === v ? "#c8684a" : "#ffffff",
               color: view === v ? "#ffffff" : "#a09080",
-              fontSize: "12px", fontWeight: "700", cursor: "pointer",
+              fontSize: "11px", fontWeight: "700", cursor: "pointer",
               fontFamily: "inherit", transition: "all 0.15s",
-              boxShadow: view === v ? "0 4px 12px rgba(200,104,74,0.3)" : "none"
+              boxShadow: view === v ? "0 4px 12px rgba(200,104,74,0.3)" : "none",
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
             }}>{label}</button>
           ))}
           <button
@@ -645,7 +889,10 @@ export default function App() {
                               fontSize: "12px", padding: "7px 12px", borderRadius: "12px",
                               background: "#faf6f0", fontWeight: "600"
                             }}>
-                              <span style={{ color: "#b0a090" }}>{item.date}</span>
+                              <div>
+                                <span style={{ color: "#b0a090" }}>{item.date}</span>
+                                <span style={{ color: "#c8b8a8", marginLeft: "8px" }}>spotted by {item.name}</span>
+                              </div>
                               <span style={{ color: "#786450", fontWeight: "700" }}>{formatPrice(item.price)}</span>
                             </div>
                           ))}
@@ -684,8 +931,13 @@ export default function App() {
                     suburb={c.suburb}
                     price={c.avg}
                     vibes={[]}
+                    latestEntryId={c.latestEntryId}
+                    lastConfirmed={c.lastConfirmed}
+                    onConfirm={confirmPrice}
+                    saved={savedCafes.has(`${c.cafe}||${c.suburb}`)}
+                    onToggleSave={toggleSave}
                     onLog={() => {
-                      setForm({ suburb: c.suburb, cafe: c.cafe, price: "", address: "", vibes: [] });
+                      setForm({ suburb: c.suburb, cafe: c.cafe, price: "", address: "", vibes: [], name: "", email: "" });
                       setCafeSearch("");
                       changeView("submit");
                     }}
@@ -818,7 +1070,7 @@ export default function App() {
                     }}>☕</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: "14px", fontWeight: "700", color: "#1e1a14", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.cafe}</div>
-                      <div style={{ fontSize: "12px", color: "#b0a090", fontWeight: "600", marginTop: "2px" }}>{e.suburb} · {e.date}</div>
+                      <div style={{ fontSize: "12px", color: "#b0a090", fontWeight: "600", marginTop: "2px" }}>{e.suburb} · {e.date} · spotted by {e.name || "Anonymous"}</div>
                     </div>
                     <div style={{ background: bg, color: col, fontWeight: "800", fontSize: "16px", padding: "6px 14px", borderRadius: "999px", flexShrink: 0 }}>
                       {formatPrice(e.price)}
@@ -829,6 +1081,155 @@ export default function App() {
               })()}
             </div>
           )}
+
+          {/* CHANGELOG */}
+          {renderedView === "changelog" && (() => {
+            if (loading) return (
+              <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700" }}>Brewing data...</div>
+            );
+
+            // Build a merged event stream: submissions + confirmations
+            const events = entries.flatMap(e => {
+              const base = { cafe: e.cafe, suburb: e.suburb, price: Number(e.price), name: e.name || "Anonymous" };
+              const out = [{ ...base, id: `s-${e.id}`, type: "spotted",   timestamp: e.created_at }];
+              if (e.last_confirmed) out.push({ ...base, id: `c-${e.id}`, type: "confirmed", timestamp: e.last_confirmed });
+              return out;
+            }).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+            if (events.length === 0) return (
+              <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700" }}>
+                No activity yet — be the first to report a price!
+              </div>
+            );
+
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {events.map(ev => {
+                  const isConfirm = ev.type === "confirmed";
+                  return (
+                    <div key={ev.id} style={{ ...CARD, padding: "13px 16px", display: "flex", alignItems: "center", gap: "13px" }}>
+                      {/* Icon */}
+                      <div style={{
+                        width: "42px", height: "42px", borderRadius: "13px", flexShrink: 0,
+                        background: isConfirm ? "#edfaf3" : "#fff3e8",
+                        border: `1.5px solid ${isConfirm ? "#b8e8cc" : "#f0d4c0"}`,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: isConfirm ? "16px" : "20px",
+                        color: isConfirm ? "#3a7a5a" : undefined,
+                        fontWeight: "800",
+                      }}>
+                        {isConfirm ? "✓" : "☕"}
+                      </div>
+
+                      {/* Content */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: "14px", fontWeight: "700", color: "#1e1a14", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {ev.cafe}
+                        </div>
+                        <div style={{ fontSize: "12px", color: "#b0a090", fontWeight: "600", marginTop: "1px" }}>
+                          {ev.suburb}
+                        </div>
+                        <div style={{ fontSize: "12px", fontWeight: "700", marginTop: "3px", color: isConfirm ? "#3a7a5a" : "#c8684a" }}>
+                          {isConfirm
+                            ? `confirmed ${formatPrice(ev.price)} still correct`
+                            : `spotted ${formatPrice(ev.price)}`}
+                          <span style={{ color: "#c8b8a8", fontWeight: "600" }}> · {ev.name}</span>
+                        </div>
+                      </div>
+
+                      {/* Time */}
+                      <div style={{ fontSize: "11px", color: "#c8b8a8", fontWeight: "700", flexShrink: 0, textAlign: "right", minWidth: "52px" }}>
+                        {timeAgo(ev.timestamp)}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{ textAlign: "center", marginTop: "8px", fontSize: "12px", color: "#d4c4b4", fontWeight: "700" }}>
+                  {events.length} event{events.length !== 1 ? "s" : ""} · refreshes every 30s
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* SAVED */}
+          {renderedView === "saved" && (() => {
+            if (savedCafes.size === 0) return (
+              <div style={{ textAlign: "center", padding: "60px 20px" }}>
+                <div style={{ fontSize: "48px", marginBottom: "16px" }}>♡</div>
+                <div style={{ fontSize: "16px", fontWeight: "800", color: "#1e1a14", marginBottom: "8px" }}>No saved cafes yet</div>
+                <div style={{ fontSize: "13px", color: "#b0a090", fontWeight: "600", lineHeight: 1.6, maxWidth: "280px", margin: "0 auto 24px" }}>
+                  Tap the ♡ on any cafe card to save it here for quick access.
+                </div>
+                <button
+                  onClick={() => changeView("leaderboard")}
+                  style={{
+                    padding: "12px 24px", borderRadius: "999px",
+                    background: "#c8684a", border: "none", color: "#fff",
+                    fontSize: "13px", fontWeight: "800", cursor: "pointer", fontFamily: "inherit",
+                    boxShadow: "0 4px 14px rgba(200,104,74,0.35)",
+                  }}
+                >Browse cafes →</button>
+              </div>
+            );
+            const allCafes = getAllCafes(entries);
+            const saved = allCafes.filter(c => savedCafes.has(`${c.cafe}||${c.suburb}`));
+            // Also include any saved keys that no longer have data (removed from index)
+            const savedKeys = [...savedCafes];
+            const missingKeys = savedKeys.filter(k => !saved.find(c => `${c.cafe}||${c.suburb}` === k));
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div style={{ fontSize: "13px", color: "#b0a090", fontWeight: "600", marginBottom: "4px" }}>
+                  {saved.length} saved cafe{saved.length !== 1 ? "s" : ""}
+                </div>
+                {saved.map(c => (
+                  <CafeCard
+                    key={`${c.cafe}||${c.suburb}`}
+                    cafe={c.cafe}
+                    suburb={c.suburb}
+                    price={c.avg}
+                    vibes={[]}
+                    latestEntryId={c.latestEntryId}
+                    lastConfirmed={c.lastConfirmed}
+                    onConfirm={confirmPrice}
+                    saved={true}
+                    onToggleSave={toggleSave}
+                    onLog={() => {
+                      setForm({ suburb: c.suburb, cafe: c.cafe, price: "", address: "", vibes: [], name: "", email: "" });
+                      setCafeSearch("");
+                      changeView("submit");
+                    }}
+                  />
+                ))}
+                {missingKeys.length > 0 && (
+                  <div style={{ marginTop: "8px" }}>
+                    <div style={{ fontSize: "11px", fontWeight: "700", color: "#c8b8a8", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: "8px" }}>
+                      No price data yet
+                    </div>
+                    {missingKeys.map(k => {
+                      const [cafeName, sub] = k.split("||");
+                      return (
+                        <div key={k} style={{ ...CARD, padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "8px" }}>
+                          <div>
+                            <div style={{ fontSize: "14px", fontWeight: "800", color: "#1e1a14" }}>{cafeName}</div>
+                            <div style={{ fontSize: "12px", color: "#b0a090", fontWeight: "600", marginTop: "2px" }}>📍 {sub}</div>
+                          </div>
+                          <button
+                            onClick={() => toggleSave(cafeName, sub)}
+                            style={{
+                              background: "#fff0eb", border: "1.5px solid #f0d4c0", borderRadius: "50%",
+                              width: "34px", height: "34px", cursor: "pointer",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              fontSize: "16px", color: "#c8684a", flexShrink: 0,
+                            }}
+                          >♥</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* SUBMIT */}
           {renderedView === "submit" && (
@@ -849,7 +1250,7 @@ export default function App() {
                   <div style={{ marginBottom: "18px" }}>
                     <div style={{ fontSize: "12px", fontWeight: "700", letterSpacing: "1px", color: "#b0a090", textTransform: "uppercase", marginBottom: "8px" }}>Suburb</div>
                     <select className="cs-input" value={form.suburb} onChange={e => {
-                      setForm({ suburb: e.target.value, cafe: "", price: form.price, address: "", vibes: [] });
+                      setForm({ suburb: e.target.value, cafe: "", price: form.price, address: "", vibes: [], name: form.name });
                       setCafeSearch("");
                     }} style={inputStyle}>
                       <option value="">Select suburb...</option>
@@ -892,7 +1293,7 @@ export default function App() {
                           <div style={{ maxHeight: "240px", overflowY: "auto" }}>
                             {filteredCafes.length === 0 && !cafeSearch && (
                               <div style={{ padding: "12px", textAlign: "center", color: "#c8b8a8", fontSize: "13px", fontWeight: "600" }}>
-                                No cafes found in OpenStreetMap
+                                No cafes found
                               </div>
                             )}
                             {filteredCafes.map((c, i) => (
@@ -901,12 +1302,17 @@ export default function App() {
                                 style={{ padding: "10px 12px", borderRadius: "10px", cursor: "pointer", marginBottom: "2px" }}
                                 onMouseEnter={e => e.currentTarget.style.background = "#faf6f0"}
                                 onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                                <div style={{ fontSize: "13px", fontWeight: "700", color: "#1e1a14" }}>{c.name}</div>
+                                <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+                                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#1e1a14" }}>{c.name}</span>
+                                  {c.inIndex && (
+                                    <span style={{ fontSize: "10px", fontWeight: "800", color: "#c8684a", background: "#fff3e8", border: "1px solid #f0d4c0", borderRadius: "999px", padding: "1px 7px", flexShrink: 0 }}>in index</span>
+                                  )}
+                                </div>
                                 {c.address && <div style={{ fontSize: "11px", color: "#b0a090", marginTop: "1px" }}>{c.address}</div>}
                               </div>
                             ))}
                             {/* Add manually if not found */}
-                            {cafeSearch && !suburbCafes.find(c => c.name.toLowerCase() === cafeSearch.toLowerCase()) && (
+                            {cafeSearch && !mergedCafes.find(c => c.name.toLowerCase() === cafeSearch.toLowerCase()) && (
                               <div
                                 onClick={() => { setForm({ ...form, cafe: cafeSearch, address: "" }); setCafeSearch(""); }}
                                 style={{ padding: "10px 12px", borderRadius: "10px", cursor: "pointer", borderTop: filteredCafes.length > 0 ? "1px solid #f0ece8" : "none", marginTop: "4px" }}
@@ -950,7 +1356,46 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Step 4: Vibes */}
+                  {/* Step 4: Name */}
+                  {form.cafe && form.price && (
+                    <div style={{ marginBottom: "18px" }}>
+                      <div style={{ fontSize: "12px", fontWeight: "700", letterSpacing: "1px", color: "#b0a090", textTransform: "uppercase", marginBottom: "8px" }}>
+                        Your name or handle <span style={{ color: "#d4c4b4", fontWeight: "600", textTransform: "none", letterSpacing: 0 }}>— optional</span>
+                      </div>
+                      <input
+                        className="cs-input"
+                        type="text"
+                        placeholder="e.g. Sam, @coffeefiend (optional)"
+                        value={form.name}
+                        onChange={e => setForm({ ...form, name: e.target.value })}
+                        style={inputStyle}
+                        maxLength={60}
+                      />
+                    </div>
+                  )}
+
+                  {/* Step 4b: Email */}
+                  {form.cafe && form.price && (
+                    <div style={{ marginBottom: "18px" }}>
+                      <div style={{ fontSize: "12px", fontWeight: "700", letterSpacing: "1px", color: "#b0a090", textTransform: "uppercase", marginBottom: "8px" }}>
+                        Stay in the loop <span style={{ color: "#d4c4b4", fontWeight: "600", textTransform: "none", letterSpacing: 0 }}>— optional</span>
+                      </div>
+                      <input
+                        className="cs-input"
+                        type="email"
+                        placeholder="your@email.com"
+                        value={form.email}
+                        onChange={e => setForm({ ...form, email: e.target.value })}
+                        style={inputStyle}
+                        maxLength={254}
+                      />
+                      <div style={{ fontSize: "11px", color: "#c8b8a8", fontWeight: "600", marginTop: "6px", lineHeight: 1.5 }}>
+                        We'll let you know when Coffee Spot launches properly and hits new milestones.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 5: Vibes */}
                   {form.cafe && form.price && (
                     <div style={{ marginBottom: "18px" }}>
                       <div style={{ fontSize: "12px", fontWeight: "700", letterSpacing: "1px", color: "#b0a090", textTransform: "uppercase", marginBottom: "8px" }}>
@@ -983,27 +1428,124 @@ export default function App() {
                     </div>
                   )}
 
-                  <button onClick={handleSubmit} disabled={submitting || !form.suburb || !form.cafe || !form.price} style={{
-                    width: "100%", padding: "15px", borderRadius: "999px",
-                    background: "#c8684a", border: "none", color: "#ffffff",
-                    fontSize: "14px", fontWeight: "800", letterSpacing: "0.5px",
-                    cursor: (submitting || !form.suburb || !form.cafe || !form.price) ? "not-allowed" : "pointer",
-                    fontFamily: "inherit", marginTop: "8px",
-                    opacity: (submitting || !form.suburb || !form.cafe || !form.price) ? 0.45 : 1,
-                    transition: "opacity 0.2s",
-                    boxShadow: "0 4px 14px rgba(200,104,74,0.35)"
-                  }}>
-                    {submitting ? "Submitting..." : "Submit Price"}
-                  </button>
-                  <div style={{ textAlign: "center", marginTop: "12px", fontSize: "12px", fontWeight: "600", color: submitHint ? "#c8684a" : "#d4c4b4", minHeight: "18px" }}>
-                    {submitHint ?? "No account needed. Just the vibe."}
-                  </div>
+                  {showPriceWarning ? (
+                    <div style={{
+                      marginTop: "8px", padding: "16px 18px", borderRadius: "16px",
+                      background: "#fff8f0", border: "1.5px solid #f0d4c0",
+                      animation: "fadeSlideIn 0.2s ease",
+                    }}>
+                      <div style={{ display: "flex", gap: "10px", alignItems: "flex-start", marginBottom: "14px" }}>
+                        <span style={{ fontSize: "20px", flexShrink: 0 }}>⚠️</span>
+                        <div>
+                          <div style={{ fontSize: "14px", fontWeight: "800", color: "#1e1a14", marginBottom: "4px" }}>
+                            Price looks a bit different
+                          </div>
+                          <div style={{ fontSize: "13px", color: "#786450", fontWeight: "600", lineHeight: 1.5 }}>
+                            This price looks different from what we have on record. Are you sure?
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button
+                          onClick={doSubmit}
+                          disabled={submitting}
+                          style={{
+                            flex: 1, padding: "11px", borderRadius: "999px",
+                            background: "#c8684a", border: "none", color: "#ffffff",
+                            fontSize: "13px", fontWeight: "800", cursor: "pointer",
+                            fontFamily: "inherit", opacity: submitting ? 0.6 : 1,
+                            boxShadow: "0 3px 10px rgba(200,104,74,0.3)",
+                          }}
+                        >
+                          {submitting ? "Submitting..." : "Yes, submit"}
+                        </button>
+                        <button
+                          onClick={() => setShowPriceWarning(false)}
+                          style={{
+                            flex: 1, padding: "11px", borderRadius: "999px",
+                            background: "transparent", border: "1.5px solid #ede5d8",
+                            color: "#a09080", fontSize: "13px", fontWeight: "700",
+                            cursor: "pointer", fontFamily: "inherit",
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <button onClick={handleSubmit} disabled={submitting || !form.suburb || !form.cafe || !form.price} style={{
+                        width: "100%", padding: "15px", borderRadius: "999px",
+                        background: "#c8684a", border: "none", color: "#ffffff",
+                        fontSize: "14px", fontWeight: "800", letterSpacing: "0.5px",
+                        cursor: (submitting || !form.suburb || !form.cafe || !form.price) ? "not-allowed" : "pointer",
+                        fontFamily: "inherit", marginTop: "8px",
+                        opacity: (submitting || !form.suburb || !form.cafe || !form.price) ? 0.45 : 1,
+                        transition: "opacity 0.2s",
+                        boxShadow: "0 4px 14px rgba(200,104,74,0.35)"
+                      }}>
+                        {submitting ? "Submitting..." : "Submit Price"}
+                      </button>
+                      {submitError && (
+                        <div style={{ marginTop: "10px", padding: "10px 14px", borderRadius: "12px", background: "rgba(224,80,80,0.08)", border: "1.5px solid rgba(224,80,80,0.2)" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#e05050" }}>⚠ {submitError}</div>
+                        </div>
+                      )}
+                      <div style={{ textAlign: "center", marginTop: "12px", fontSize: "12px", fontWeight: "600", color: submitHint ? "#c8684a" : "#d4c4b4", minHeight: "18px" }}>
+                        {submitHint ?? "No account needed. Just the vibe."}
+                      </div>
+                    </>
+                  )}
                 </>
               )}
             </div>
           )}
         </div>
       </div>
+
+      {/* WhatsApp share — floating pill, bottom-right */}
+      <a
+        href={`https://wa.me/?text=${encodeURIComponent("Check out Coffee Spot — tracks real flat white prices at Melbourne cafes 🔍☕ flatwhite-index.vercel.app")}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          position: "fixed",
+          bottom: "24px",
+          right: "20px",
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          padding: "11px 18px 11px 14px",
+          borderRadius: "999px",
+          background: "#ffffff",
+          border: "1.5px solid #ede5d8",
+          boxShadow: "0 4px 18px rgba(0,0,0,0.10)",
+          textDecoration: "none",
+          zIndex: 100,
+          transition: "transform 0.15s, box-shadow 0.15s",
+        }}
+        onMouseEnter={e => {
+          e.currentTarget.style.transform = "translateY(-2px)";
+          e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.13)";
+        }}
+        onMouseLeave={e => {
+          e.currentTarget.style.transform = "translateY(0)";
+          e.currentTarget.style.boxShadow = "0 4px 18px rgba(0,0,0,0.10)";
+        }}
+      >
+        {/* WhatsApp icon */}
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="#25D366" xmlns="http://www.w3.org/2000/svg">
+          <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+        </svg>
+        <span style={{
+          fontSize: "13px",
+          fontWeight: "800",
+          color: "#786450",
+          fontFamily: "'Nunito', system-ui, sans-serif",
+          letterSpacing: "0.1px",
+        }}>Share</span>
+      </a>
+
     </div>
   );
 }
