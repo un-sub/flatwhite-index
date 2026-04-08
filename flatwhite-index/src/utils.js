@@ -41,6 +41,8 @@ export const VIBES = [
   { id: "budget-friendly",label: "Budget friendly",    emoji: "💸",  color: "#7a9a30", bg: "#f4fae0", border: "#d4e8a0" },
   { id: "brunch-spot",    label: "Brunch spot",        emoji: "🪴",  color: "#c8882a", bg: "#fdf6e0", border: "#f0d898" },
   { id: "good-music",     label: "Good music",         emoji: "🎵",  color: "#9a3a9a", bg: "#faf0fa", border: "#e8b8e8" },
+  { id: "great-food",    label: "Great food",         emoji: "🍽️",  color: "#b05030", bg: "#fff4f0", border: "#f0ccc0" },
+  { id: "wide-range",    label: "Wide range",         emoji: "☕",  color: "#5a7a4a", bg: "#f0f8ec", border: "#c0e0b0" },
 ];
 
 export const KNOWN_CAFES = [

@@ -50,3 +50,78 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   0%   { opacity: 1; transform: translate(var(--hx, 0px), 0px) scale(1); }
   100% { opacity: 0; transform: translate(var(--hx, 0px), -52px) scale(0.4); }
 }
+
+/* Leaflet map — warm tile filter */
+.leaflet-tile-pane {
+  filter: none;
+}
+
+/* Zoom controls */
+.leaflet-control-zoom a {
+  font-family: 'Nunito', system-ui, sans-serif !important;
+  color: #8b6040 !important;
+  background: #fffcf8 !important;
+  border-color: #ede5d8 !important;
+  font-weight: 800 !important;
+}
+
+.leaflet-control-zoom a:hover {
+  background: #fff3e8 !important;
+  color: #c8684a !important;
+}
+
+.leaflet-control-zoom {
+  border: 1.5px solid #ede5d8 !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08) !important;
+}
+
+/* Leaflet popup — warm cream/brown theme */
+.leaflet-popup-content-wrapper {
+  border-radius: 16px !important;
+  border: 1.5px solid #ede5d8 !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.12), 0 1px 4px rgba(0,0,0,0.06) !important;
+  padding: 0 !important;
+  background: #fffcf8 !important;
+}
+
+.leaflet-popup-content {
+  margin: 14px 16px !important;
+  font-family: 'Nunito', system-ui, sans-serif !important;
+}
+
+.leaflet-popup-tip-container {
+  margin-top: -1px;
+}
+
+.leaflet-popup-tip {
+  background: #fffcf8 !important;
+  box-shadow: none !important;
+}
+
+.leaflet-popup-close-button {
+  color: #b0a090 !important;
+  font-size: 18px !important;
+  padding: 6px 8px !important;
+  top: 4px !important;
+  right: 4px !important;
+}
+
+.leaflet-popup-close-button:hover {
+  color: #c8684a !important;
+  background: transparent !important;
+}
+
+/* Tile layer attribution */
+.leaflet-control-attribution {
+  font-family: 'Nunito', system-ui, sans-serif !important;
+  font-size: 10px !important;
+  background: rgba(255,252,248,0.85) !important;
+  color: #b0a090 !important;
+  border-radius: 8px 0 0 0 !important;
+}
+
+.leaflet-control-attribution a {
+  color: #c8684a !important;
+}

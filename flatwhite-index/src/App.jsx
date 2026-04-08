@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { query, formatPrice, CARD, VIBES, KNOWN_CAFES, haversine, formatDist } from "./utils";
+import MapView from "./MapView";
 
 const timeAgo = (ts) => {
   const diff = Date.now() - new Date(ts).getTime();
@@ -539,7 +540,8 @@ export default function App() {
           type: "Flat White",
           price: parseFloat(form.price),
           date: new Date().toISOString().split("T")[0],
-          name: form.name.trim() || "Anonymous"
+          name: form.name.trim() || "Anonymous",
+          vibes: form.vibes.length ? form.vibes : null
         })
       });
       if (form.email.trim()) {
@@ -958,84 +960,7 @@ export default function App() {
               {loading ? (
                 <div style={{ textAlign: "center", padding: "60px 0", color: "#c8b8a8", fontSize: "14px", fontWeight: "700" }}>Brewing data...</div>
               ) : (
-                <>
-                  <svg viewBox="0 0 460 410" style={{ width: "100%", display: "block" }}
-                    onMouseLeave={() => setHoveredSuburb(null)}>
-                    <ellipse cx="130" cy="420" rx="160" ry="60" fill="rgba(180,220,255,0.25)" />
-                    {Object.entries(SUBURB_POSITIONS).map(([suburb, [x, y]]) => {
-                      const data = suburbAvgMap[suburb];
-                      const col = data ? getPriceColor(data.avg, minAvg, maxAvg) : "#d4c8bc";
-                      const bg  = data ? getPriceBg(data.avg, minAvg, maxAvg)   : "#f4ede6";
-                      const isHov = hoveredSuburb === suburb;
-                      return (
-                        <g key={suburb}
-                          style={{ cursor: data ? "pointer" : "default" }}
-                          onClick={() => {
-                            if (!data) return;
-                            changeView("leaderboard");
-                            setTimeout(() => setSelectedSuburb(suburb), 180);
-                          }}
-                          onMouseEnter={() => setHoveredSuburb(suburb)}
-                          onMouseLeave={() => setHoveredSuburb(null)}>
-                          <circle cx={x} cy={y} r={isHov ? 15 : 12}
-                            fill={bg} stroke={col} strokeWidth={isHov ? 2.5 : 1.5}
-                            style={{ transition: "r 0.12s, stroke-width 0.12s" }} />
-                          {data && (
-                            <text x={x} y={y + 0.5} textAnchor="middle" dominantBaseline="middle"
-                              fontSize="7" fontWeight="800" fill={col}
-                              style={{ pointerEvents: "none", fontFamily: "Nunito, system-ui, sans-serif" }}>
-                              {formatPrice(data.avg)}
-                            </text>
-                          )}
-                        </g>
-                      );
-                    })}
-                    {hoveredSuburb && (() => {
-                      const [tx, ty] = SUBURB_POSITIONS[hoveredSuburb];
-                      const data = suburbAvgMap[hoveredSuburb];
-                      const w = Math.max(hoveredSuburb.length * 6.2, 64);
-                      const h = data ? 38 : 24;
-                      const above = ty > 60;
-                      const tooltipY = above ? ty - 20 - h : ty + 20;
-                      return (
-                        <g style={{ pointerEvents: "none" }}>
-                          <rect x={tx - w / 2} y={tooltipY} width={w} height={h}
-                            rx={8} fill="white" stroke="#ede5d8" strokeWidth={1.5} />
-                          <text x={tx} y={tooltipY + (data ? 13 : 12)}
-                            textAnchor="middle" dominantBaseline="middle"
-                            fontSize="8.5" fontWeight="700" fill="#1e1a14"
-                            style={{ fontFamily: "Nunito, system-ui, sans-serif" }}>
-                            {hoveredSuburb}
-                          </text>
-                          {data && (
-                            <text x={tx} y={tooltipY + 27}
-                              textAnchor="middle" dominantBaseline="middle"
-                              fontSize="8" fontWeight="800"
-                              fill={getPriceColor(data.avg, minAvg, maxAvg)}
-                              style={{ fontFamily: "Nunito, system-ui, sans-serif" }}>
-                              avg {formatPrice(data.avg)}
-                            </text>
-                          )}
-                        </g>
-                      );
-                    })()}
-                  </svg>
-                  <div style={{ display: "flex", gap: "16px", justifyContent: "center", marginTop: "12px" }}>
-                    {[["#3aaa6a", "Cheaper"], ["#d4a030", "Mid"], ["#e05050", "Pricier"], ["#d4c8bc", "No data"]].map(([color, label]) => (
-                      <div key={label} style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                        <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: color }} />
-                        <span style={{ fontSize: "11px", fontWeight: "700", color: "#b0a090" }}>{label}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{
-                    textAlign: "center", marginTop: "12px", padding: "10px 16px",
-                    background: "#fff3e8", borderRadius: "12px",
-                    fontSize: "12px", color: "#c8684a", fontWeight: "700",
-                  }}>
-                    👆 Tap a coloured dot to explore that suburb's cafes
-                  </div>
-                </>
+                <MapView entries={entries} />
               )}
             </div>
           )}
@@ -1250,7 +1175,7 @@ export default function App() {
                   <div style={{ marginBottom: "18px" }}>
                     <div style={{ fontSize: "12px", fontWeight: "700", letterSpacing: "1px", color: "#b0a090", textTransform: "uppercase", marginBottom: "8px" }}>Suburb</div>
                     <select className="cs-input" value={form.suburb} onChange={e => {
-                      setForm({ suburb: e.target.value, cafe: "", price: form.price, address: "", vibes: [], name: form.name });
+                      setForm({ suburb: e.target.value, cafe: "", price: form.price, address: "", vibes: [], name: form.name, email: form.email });
                       setCafeSearch("");
                     }} style={inputStyle}>
                       <option value="">Select suburb...</option>
